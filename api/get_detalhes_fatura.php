@@ -1,38 +1,33 @@
 <?php
 // faturas/api/get_detalhes_fatura.php
-
+require_once 'cors.php';
 header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
-header("Cache-Control: no-store, no-cache, must-revalidate, max-age=0");
-header("Cache-Control: post-check=0, pre-check=0", false);
-header("Pragma: no-cache");
-
 require_once 'Database.php';
 
 try {
     $database = Database::getInstance();
     $pdo = $database->getConnection();
     
-    if (empty($_GET['fatura_id'])) {
+    $faturaId = isset($_GET['fatura_id']) ? (int)$_GET['fatura_id'] : 0;
+
+    if ($faturaId <= 0) {
         http_response_code(400);
-        die(json_encode(['message' => 'O ID da fatura é obrigatório.']));
+        echo json_encode(['message' => 'O ID da fatura é obrigatório.']);
+        exit();
     }
 
-    $faturaId = $_GET['fatura_id'];
-    $response = [];
-
-    // CORREÇÃO: Adicionada a coluna "f.cliente_id" à consulta
+    // Query 1: (f.*) - Esta query funciona, pois f.* pega os nomes corretos.
     $stmt = $pdo->prepare("
         SELECT 
-            f.id, f.mes_referencia, f.data_emissao, f.data_vencimento, f.valor_total, f.status,
-            f.taxa_minima, f.percentual_desconto, f.subtotal, f.valor_desconto, f.cliente_id,
+            f.*, 
+            i.id as instalacao_id_para_historico,
+            i.codigo_uc, i.endereco_instalacao, i.tipo_contrato, i.tipo_instalacao, i.regra_faturamento,
             c.nome as cliente_nome, c.documento as cliente_documento,
-            i.codigo_uc, i.endereco_instalacao, i.tipo_de_ligacao, i.tipo_contrato,
-            lm.consumo_kwh, lm.injecao_kwh, lm.data_leitura
+            ig.nome_do_integrador
         FROM faturas f
-        JOIN clientes c ON f.cliente_id = c.id
         JOIN instalacoes i ON f.instalacao_id = i.id
-        LEFT JOIN leituras_medidor lm ON f.instalacao_id = lm.instalacao_id AND f.mes_referencia = lm.mes_referencia
+        JOIN clientes c ON i.cliente_id = c.id
+        JOIN integradores ig ON c.integrador_id = ig.id
         WHERE f.id = ?
     ");
     $stmt->execute([$faturaId]);
@@ -40,20 +35,44 @@ try {
 
     if (!$fatura) {
         http_response_code(404);
-        die(json_encode(['message' => 'Fatura não encontrada.']));
+        echo json_encode(['message' => 'Fatura não encontrada.']);
+        exit();
     }
-    $response['fatura'] = $fatura;
 
-    $stmtItens = $pdo->prepare("SELECT * FROM fatura_itens WHERE fatura_id = ? ORDER BY id");
-    $stmtItens->execute([$faturaId]);
-    $itens = $stmtItens->fetchAll(PDO::FETCH_ASSOC);
-    $response['itens'] = $itens;
+    // --- LÓGICA DE VENCIMENTO AUTOMÁTICO ---
+    $hoje = new DateTime('today');
+    $dataVencimento = new DateTime($fatura['data_vencimento']);
+    if ($fatura['status'] === 'Pendente' && $dataVencimento < $hoje) {
+        $fatura['status'] = 'Vencida';
+    }
+
+    // --- NOVA QUERY: Buscar o Histórico de Consumo ---
+    // A tabela que armazena leituras é `leituras_medidor` (inserida em gerar_fatura.php).
+    // Usamos a coluna `consumo_kwh` como a métrica de consumo para o histórico.
+    $instalacaoId = $fatura['instalacao_id_para_historico'];
+
+    $stmtHistorico = $pdo->prepare("
+        SELECT id, mes_referencia, consumo_kwh as consumo
+        FROM leituras_medidor
+        WHERE instalacao_id = ?
+        ORDER BY mes_referencia DESC
+        LIMIT 12
+    ");
+    $stmtHistorico->execute([$instalacaoId]);
+    $historico = $stmtHistorico->fetchAll(PDO::FETCH_ASSOC);
+
+    // --- NOVO RESULTADO COMBINADO ---
+    $resultado = [
+        'fatura_detalhes' => $fatura,
+        'historico_consumo' => $historico
+    ];
 
     http_response_code(200);
-    echo json_encode($response);
+    echo json_encode($resultado); 
 
 } catch (Exception $e) {
     http_response_code(500);
-    die(json_encode(['message' => 'Erro ao buscar detalhes da fatura.', 'details' => $e->getMessage()]));
+    // Retorna o erro real do PHP/SQL para depuração
+    echo json_encode(['message' => 'Erro ao buscar detalhes da fatura.', 'details' => $e->getMessage()]);
 }
 ?>

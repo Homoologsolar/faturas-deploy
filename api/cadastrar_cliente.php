@@ -4,7 +4,8 @@ ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
 header("Content-Type: application/json; charset=UTF-8");
-header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Origin: http://localhost:5173");
+header("Access-Control-Allow-Credentials: true");
 header("Access-Control-Allow-Methods: POST, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
 
@@ -21,56 +22,51 @@ try {
     
     $data = json_decode(file_get_contents("php://input"));
 
-    // Validação sem o campo de e-mail
+    // Validação SIMPLIFICADA (Apenas campos do cliente)
     if (
-        empty($data->integrador_id) || empty($data->nome) || empty($data->documento) || 
-        empty($data->codigo_uc) || empty($data->endereco_instalacao) ||
-        empty($data->tipo_instalacao)
+        empty($data->nome) ||
+        empty($data->documento) ||
+        empty($data->integrador_id) // Esta coluna é da tabela 'clientes' no novo schema
     ) {
         http_response_code(400);
-        echo json_encode(['message' => 'Todos os campos obrigatórios devem ser preenchidos.']);
+        echo json_encode(['message' => 'Campos obrigatórios (Nome, Documento e Integrador) devem ser preenchidos.']);
         exit();
     }
 
-    $pdo->beginTransaction();
-
-    // Inserção na tabela 'clientes' sem o e-mail
-    $sqlCliente = "INSERT INTO clientes (nome, documento, telefone, endereco_cobranca) VALUES (?, ?, ?, ?)";
+    // 1. Inserção na tabela 'clientes' (CORRIGIDO para cadastro separado)
+    // Insere apenas os dados do cliente
+    $sqlCliente = "INSERT INTO clientes (
+                        nome, documento, telefone, integrador_id
+                   ) VALUES (?, ?, ?, ?)";
     $stmtCliente = $pdo->prepare($sqlCliente);
-    $stmtCliente->execute([$data->nome, $data->documento, $data->telefone ?? null, $data->endereco_instalacao]);
+    $stmtCliente->execute([
+        $data->nome, 
+        $data->documento, 
+        $data->telefone ?? null,
+        $data->integrador_id
+    ]);
+    
     $clienteId = $pdo->lastInsertId();
 
-    $sqlInstalacao = "INSERT INTO instalacoes (
-                        cliente_id, integrador_id, codigo_uc, endereco_instalacao, tipo_de_ligacao, 
-                        tipo_contrato, tipo_instalacao, regra_faturamento
-                      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
-    $stmtInstalacao = $pdo->prepare($sqlInstalacao);
-    $stmtInstalacao->execute([
-        $clienteId, 
-        $data->integrador_id, 
-        $data->codigo_uc, 
-        $data->endereco_instalacao, 
-        $data->tipo_de_ligacao ?? 'Monofásica',
-        'Investimento', // Valor fixo
-        $data->tipo_instalacao ?? 'Beneficiária',
-        $data->regra_faturamento ?? 'Depois da Taxação'
-    ]);
-
-    $pdo->commit();
+    // A lógica de inserir na tabela 'instalacoes' foi REMOVIDA
+    // Isso será feito pelo seu outro script (cadastrar_instalacao.php)
 
     http_response_code(201);
     echo json_encode([
-        'message' => 'Cliente e instalação cadastrados com sucesso!',
+        'message' => 'Cliente cadastrado com sucesso!',
         'cliente_id' => $clienteId
     ]);
 
 } catch (PDOException $e) {
-    if ($pdo->inTransaction()) {
-        $pdo->rollBack();
-    }
     http_response_code(500);
+    
     if ($e->getCode() == 23000) {
-        echo json_encode(['message' => 'Erro: Documento (CPF/CNPJ) ou Código da UC já existe no sistema.']);
+        // O erro 23000 (chave duplicada) agora só pode ser no 'documento'
+        if (strpos($e->getMessage(), 'documento') !== false) {
+             echo json_encode(['message' => 'Erro: Documento (CPF/CNPJ) já existe no sistema.']);
+        } else {
+             echo json_encode(['message' => 'Erro: Violação de chave única. Verifique os dados.']);
+        }
     } else {
         echo json_encode(['message' => 'Erro interno ao cadastrar cliente.', 'details' => $e->getMessage()]);
     }
