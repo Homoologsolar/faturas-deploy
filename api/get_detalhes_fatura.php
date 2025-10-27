@@ -18,8 +18,12 @@ try {
 
     // Query 1: (f.*) - Esta query funciona, pois f.* pega os nomes corretos.
     $stmt = $pdo->prepare("
-        SELECT 
+       SELECT 
             f.*, 
+            lm.consumo_kwh AS consumo_kwh_registrado,
+            lm.data_leitura,
+            lm.numero_dias,
+            lm.injecao_kwh,
             i.id as instalacao_id_para_historico,
             i.codigo_uc, i.endereco_instalacao, i.tipo_contrato, i.tipo_instalacao, i.regra_faturamento,
             c.nome as cliente_nome, c.documento as cliente_documento,
@@ -28,6 +32,7 @@ try {
         JOIN instalacoes i ON f.instalacao_id = i.id
         JOIN clientes c ON i.cliente_id = c.id
         JOIN integradores ig ON c.integrador_id = ig.id
+        LEFT JOIN leituras_medidor lm ON f.instalacao_id = lm.instalacao_id AND f.mes_referencia = lm.mes_referencia
         WHERE f.id = ?
     ");
     $stmt->execute([$faturaId]);
